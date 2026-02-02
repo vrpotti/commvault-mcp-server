@@ -97,25 +97,48 @@ class AuthService:
     
     def _get_client_ip(self, request) -> str | None:
         direct_ip = self._get_direct_connection_ip(request)
-        
         trusted_proxies = self._get_trusted_proxy_ips()
-        is_behind_trusted_proxy = direct_ip and direct_ip in trusted_proxies
-        
-        # Only trust X-Forwarded-For if behind a trusted proxy
+        is_behind_trusted_proxy = bool(direct_ip) and direct_ip in trusted_proxies
+
         if is_behind_trusted_proxy:
             forwarded_for = request.headers.get("X-Forwarded-For")
             if forwarded_for:
-                client_ip = forwarded_for.split(",")[0].strip()
-                if self._is_valid_ip(client_ip):
-                    logger.debug(f"Using X-Forwarded-For IP {client_ip} (trusted proxy: {direct_ip})")
-                    return client_ip
-                else:
-                    logger.warning(
-                        f"Invalid IP in X-Forwarded-For header: {client_ip}. "
-                        f"Falling back to direct connection IP: {direct_ip}"
+                raw_ips = [s.strip() for s in forwarded_for.split(",") if s.strip()]
+
+                # validate + normalize all header IPs
+                header_ips = []
+                for ip in raw_ips:
+                    try:
+                        header_ips.append(str(ipaddress.ip_address(ip)))
+                    except ValueError:
+                        logger.warning(
+                            "Invalid IP in X-Forwarded-For header, treating chain as untrusted: %r. "
+                            "Falling back to direct connection IP: %s",
+                            ip[:64] if len(ip) > 64 else ip,
+                            direct_ip,
+                        )
+                        header_ips = []
+                        break
+
+                if header_ips:
+                    # server -> client: direct, then rightmost->leftmost from XFF
+                    chain = [direct_ip] + list(reversed(header_ips))
+
+                    for ip in chain:
+                        if ip not in trusted_proxies:
+                            logger.debug(
+                                f"Using client IP {ip} from X-Forwarded-For chain "
+                                f"(first untrusted; direct: {direct_ip})"
+                            )
+                            return ip
+
+                    # all trusted: fall back to leftmost (original client)
+                    client_ip = header_ips[0]
+                    logger.debug(
+                        f"All X-Forwarded-For IPs trusted; using leftmost as client: {client_ip}"
                     )
-        
-        # Use direct connection IP (default)
+                    return client_ip
+
         return direct_ip
     
     def is_client_token_valid(self) -> (bool, str|None):
