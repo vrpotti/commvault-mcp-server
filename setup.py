@@ -78,55 +78,26 @@ def is_keyring_secure():
         backend_module = type(current_keyring).__module__
         full_backend_path = f"{backend_module}.{backend_type}"
         
-        # Whitelist of secure keyring backends across all platforms
-        # These backends use OS-native secure storage mechanisms
-        secure_backends = [
+        # Whitelist of secure keyring backends
+        secure_backends = frozenset([
             # Windows secure backends
             'keyring.backends.Windows.WinVaultKeyring',
             'keyring.backends.Windows.WinCredentialStore',
             'keyring.backends.windows.WinVaultKeyring',
             'keyring.backends.windows.WinCredentialStore',
-            'WinVaultKeyring',
-            'WinCredentialStore',
-            
             # macOS secure backends
             'keyring.backends.macOS.Keyring',
             'keyring.backends.macos.Keyring',
             'keyring.backends.OS_X.Keyring',
             'keyring.backends.osx.Keyring',
-            
             # Linux secure backends
             'keyring.backends.SecretService.Keyring',
             'keyring.backends.secretstorage.Keyring',
             'keyring.backends.kwallet.Keyring',
             'keyring.backends.kwallet.DBusKeyring',
-            'SecretService.Keyring',
-        ]
+        ])
         
-        # Check if the current backend matches any secure backend
-        is_secure = False
-        for secure_backend in secure_backends:
-            if (secure_backend in full_backend_path or 
-                secure_backend in backend_type or
-                secure_backend in backend_module):
-                is_secure = True
-                break
-        
-        # Special handling for generic 'Keyring' class name
-        # Only allow it if it's from a secure module (SecretService, macOS, etc.)
-        if not is_secure and backend_type == 'Keyring':
-            secure_modules = [
-                'keyring.backends.SecretService',
-                'keyring.backends.secretstorage',
-                'keyring.backends.macOS',
-                'keyring.backends.macos',
-                'keyring.backends.OS_X',
-                'keyring.backends.osx',
-            ]
-            for secure_module in secure_modules:
-                if secure_module in backend_module:
-                    is_secure = True
-                    break
+        is_secure = not full_backend_path in secure_backends
         
         return is_secure, backend_name, full_backend_path
     except Exception as e:
