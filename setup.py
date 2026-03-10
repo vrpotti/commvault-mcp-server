@@ -97,7 +97,7 @@ def is_keyring_secure():
             'keyring.backends.kwallet.DBusKeyring',
         ])
         
-        is_secure = not full_backend_path in secure_backends
+        is_secure = full_backend_path in secure_backends
         
         return is_secure, backend_name, full_backend_path
     except Exception as e:
