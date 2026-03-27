@@ -1,0 +1,377 @@
+# --------------------------------------------------------------------------
+# Copyright Commvault Systems, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# --------------------------------------------------------------------------
+
+"""
+Salesforce tools for the Commvault MCP Server.
+
+Provides tools to:
+  - Resolve a Salesforce organisation ID to the corresponding Commvault
+    clientId and backupsetId using the Salesforce list (Organization) API.
+  - Fetch backed-up Salesforce records for a given object using the
+    Commvault Salesforce records API (Reportsplus Engine dataset endpoint).
+    Records are always returned from the latest backup snapshot.
+"""
+
+from fastmcp.exceptions import ToolError
+from typing import Annotated
+from pydantic import Field
+
+from src.cv_api_client import commvault_api_client
+from src.logger import logger
+
+
+# ── Dataset ID for the Salesforce record browse endpoint ─────────────────────
+# This dataset UUID is the stable identifier for the Salesforce record-level
+# browse capability in the Commvault Reportsplus Engine.
+_SF_RECORDS_DATASET_ID = "4e639029-2764-4fb4-b7e3-0fc636cdd025"
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _get_org_id_from_org(org: dict) -> str | None:
+    """
+    Extract the Salesforce org ID from an org dict returned by the API.
+
+    Handles both the top-level 'sfOrgId' field and the nested legacy path
+    'salesforceProps.salesforceAccount.organizationId' for backward compatibility.
+
+    Args:
+        org: The org dict to extract the ID from.
+    Returns:
+        The Salesforce org ID if found, otherwise None.
+    """
+    return org.get("sfOrgId") or org.get("salesforceProps", {}).get("salesforceAccount", {}).get("organizationId")
+
+def _find_org_in_list(orgs: list, target_org_id: str) -> dict | None:
+    """
+    Search the /Salesforce/Organization list for a matching sfOrgId.
+
+    Handles both 15-character and 18-character Salesforce org ID variants
+    by comparing only the first 15 characters when the lengths differ.
+
+    Args:
+        orgs:          List of org dicts returned by the Organization API.
+        target_org_id: The Salesforce org ID supplied by the caller.
+
+    Returns:
+        The matching org dict, or None if not found.
+    """
+    target = target_org_id.strip()
+    for org in orgs:
+        cv_org_id: str = _get_org_id_from_org(org)
+        if not cv_org_id:
+            continue
+        if cv_org_id == target or cv_org_id[:15] == target[:15]:
+            return org
+    return None
+
+def _extract_ids_from_org(org: dict) -> tuple[int | None, int | None, dict]:
+    """
+    Pull clientId, backupsetId and the sfSubclient block out of an org dict.
+
+    Returns:
+        Tuple of (client_id, backupset_id, sf_subclient_dict).
+    """
+    sf_subclient: dict = org.get("sfSubclient", org.get("subclient", {}))
+    client_id: int | None    = sf_subclient.get("clientId")
+    backupset_id: int | None = sf_subclient.get("backupsetId")
+    return client_id, backupset_id, sf_subclient
+
+
+def _keyed_records(columns: list[dict], raw_records: list) -> list[dict]:
+    """
+    Convert the columnar record arrays returned by the dataset API into a
+    list of dicts keyed by column name, which is more LLM-friendly.
+
+    Args:
+        columns:     Column metadata list from the API response.
+        raw_records: List of value arrays, one per record row.
+
+    Returns:
+        List of {column_name: value} dicts.
+    """
+    col_names = [
+        col.get("name") or col.get("displayName") or str(i)
+        for i, col in enumerate(columns)
+    ]
+    return [dict(zip(col_names, row)) for row in raw_records]
+
+
+# ── Tool 1: Resolve Salesforce org ID → clientId + backupsetId ───────────────
+
+def get_salesforce_client_and_backupset_ids(
+    salesforce_org_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The Salesforce Organisation ID to look up "
+                "(e.g. '00D2w000005mBCpEAM'). Both 15-character and "
+                "18-character variants are accepted."
+            )
+        ),
+    ],
+) -> dict:
+    """
+    Resolve a Salesforce organisation ID to the Commvault clientId and
+    backupsetId by querying the Salesforce Organisation list API.
+
+    Uses the /Salesforce/Organization endpoint to retrieve all configured
+    organisations and then matches on sfOrgId, supporting both the 15-char
+    and 18-char Salesforce org ID formats.
+
+    Args:
+        salesforce_org_id: The Salesforce org ID (15 or 18 characters).
+
+    Returns:
+        A dict containing:
+          - client_id           (int)  Commvault client ID for the org.
+          - backupset_id        (int)  Commvault backupset ID for the org.
+          - backupset_name      (str)  Human-readable backupset name.
+          - organization_name   (str)  Commvault client / org name.
+          - salesforce_org_id   (str)  Canonical SF org ID as stored in Commvault.
+          - endpoint            (str)  Salesforce login endpoint URL.
+          - last_backup_time    (int | None) Unix timestamp of last backup.
+        On failure, returns a dict with 'error' key.
+    """
+    try:
+        logger.info("Fetching Salesforce organisation list to resolve org ID '%s'", salesforce_org_id)
+
+        response = commvault_api_client.get("Salesforce/Organization")
+        orgs: list = response.get("orgs", response.get("accounts", []))
+
+        if not orgs:
+            logger.warning("No Salesforce organisations returned by the API.")
+            raise ToolError("No Salesforce organisations found in Commvault.")
+
+        org = _find_org_in_list(orgs, salesforce_org_id)
+
+        if org is None:
+            available_ids = [_get_org_id_from_org(o) for o in orgs if _get_org_id_from_org(o)]
+            raise ToolError(
+                f"No Commvault organisation found matching Salesforce org ID "
+                f"'{salesforce_org_id}'. "
+                f"Checked {len(orgs)} org(s). "
+                f"Available SF org IDs: {available_ids}"
+            )
+
+        client_id, backupset_id, sf_subclient = _extract_ids_from_org(org)
+
+        logger.info(
+            "Resolved sfOrgId='%s' → clientId=%s, backupsetId=%s",
+            salesforce_org_id, client_id, backupset_id,
+        )
+
+        return {
+            "client_id": client_id,
+            "backupset_id": backupset_id,
+            "backupset_name": sf_subclient.get("backupsetName", ""),
+            "organization_name": sf_subclient.get("clientName", ""),
+            "salesforce_org_id":  _get_org_id_from_org(org) or salesforce_org_id,
+            "endpoint": org.get("endPoint", ""),
+            "last_backup_time": org.get("backupTime"),
+        }
+
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("Error resolving Salesforce org ID '%s': %s", salesforce_org_id, e)
+        raise ToolError(str(e))
+
+
+# ── Tool 2: Fetch backed-up Salesforce records ────────────────────────────────
+
+def get_salesforce_records(
+    salesforce_org_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The Salesforce Organisation ID used to automatically resolve "
+                "the Commvault clientId and backupsetId before fetching records "
+                "(e.g. '00D2w000005mBCpEAM')."
+            )
+        ),
+    ],
+    object_name: Annotated[
+        str,
+        Field(
+            description=(
+                "Salesforce API object name whose backed-up records to retrieve "
+                "(e.g. 'Account', 'Contact', 'Opportunity')."
+            )
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of records to return. Defaults to 50. "
+                "Increase for larger result sets (max 1000)."
+            ),
+            ge=1,
+            le=1000,
+        ),
+    ] = 50,
+    offset: Annotated[
+        int,
+        Field(
+            description="Number of records to skip for pagination. Defaults to 0.",
+            ge=0,
+        ),
+    ] = 0,
+    free_query: Annotated[
+        str,
+        Field(
+            description=(
+                "Optional WHERE-clause filter to narrow results "
+                "(e.g. \"Name = 'Acme'\"). Leave empty to return all records."
+            )
+        ),
+    ] = "",
+) -> dict:
+    """
+    Fetch backed-up Salesforce records for a specific Salesforce object from
+    the latest available backup snapshot.
+
+    This tool performs two steps automatically:
+      1. Calls the Salesforce Organisation list API to resolve the supplied
+         salesforce_org_id into a Commvault backupsetId.
+      2. Queries the Commvault Reportsplus Engine dataset endpoint
+         (/cr/reportsplusengine/datasets/{dataset_id}/data) with
+         pitOptions='latest' and queryOptions='latest' to ensure the most
+         recent backed-up data is always returned.
+
+    Records are returned as a list of dicts keyed by Salesforce field name,
+    making them immediately usable without further post-processing.
+
+    Args:
+        salesforce_org_id: Salesforce org ID (15 or 18 characters).
+        object_name:       Salesforce API object name (e.g. 'Account').
+        limit:             Max records to return (default 50, max 1000).
+        offset:            Pagination offset (default 0).
+        free_query:        Optional WHERE-clause filter string.
+
+    Returns:
+        A dict containing:
+          - organization_name  (str)   Commvault client / org display name.
+          - salesforce_org_id  (str)   Canonical SF org ID.
+          - client_id          (int)   Resolved Commvault client ID.
+          - backupset_id       (int)   Resolved Commvault backupset ID.
+          - object_name        (str)   The queried Salesforce object.
+          - limit              (int)   Requested record limit.
+          - offset             (int)   Requested pagination offset.
+          - total_record_count (int)   Total matching records in backup.
+          - records_returned   (int)   Number of records in this response.
+          - columns            (list)  Column/field names.
+          - records            (list)  List of {field: value} dicts.
+        On failure, returns a dict with 'error' key describing the problem.
+    """
+    # ── Step 1: resolve org ID → clientId + backupsetId ──────────────────────
+    try:
+        logger.info(
+            "get_salesforce_records: resolving sfOrgId='%s' for object='%s'",
+            salesforce_org_id, object_name,
+        )
+
+        resolve_result = get_salesforce_client_and_backupset_ids(salesforce_org_id)
+
+        client_id: int    = resolve_result["client_id"]
+        backupset_id: int = resolve_result["backupset_id"]
+        org_name: str     = resolve_result.get("organization_name", "")
+
+        logger.info(
+            "Resolved: clientId=%s, backupsetId=%s — fetching records for object='%s'",
+            client_id, backupset_id, object_name,
+        )
+
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.error("Unexpected error resolving org ID '%s': %s", salesforce_org_id, e)
+        raise ToolError(f"Failed to resolve organisation ID: {e}")
+
+    # ── Step 2: fetch records from the latest backup snapshot ─────────────────
+    try:
+        params = {
+            # Pagination
+            "limit": limit,
+            "offset": offset,
+            # Salesforce-specific dataset parameters
+            "parameter.backupSetId": backupset_id,
+            "parameter.tableName": object_name,
+            # Always return the latest backed-up data
+            "parameter.pitOptions": "latest",
+            "parameter.queryOptions": "latest",
+        }
+
+        if free_query:
+            params["parameter.freeQuery"] = free_query
+
+        endpoint = f"cr/reportsplusengine/datasets/{_SF_RECORDS_DATASET_ID}/data"
+
+        logger.info(
+            "Querying records endpoint for object='%s', backupsetId=%s, limit=%s, offset=%s",
+            object_name, backupset_id, limit, offset,
+        )
+
+        data = commvault_api_client.get(endpoint, params=params)
+
+        # Surface any application-level error returned by the dataset API
+        if data.get("errorCode", 0) != 0:
+            err_msg = data.get("errorMessage") or data.get("errorString") or str(data)
+            logger.error("Dataset API returned an error for object='%s': %s", object_name, err_msg)
+            raise ToolError({"error": err_msg, "raw_response": data})
+
+        columns: list[dict] = data.get("columns", [])
+        raw_records: list   = data.get("records", [])
+        total: int          = data.get("totalRecordCount", 0)
+        records_count: int  = data.get("recordsCount", len(raw_records))
+
+        col_names     = [col.get("name") or col.get("displayName") or str(i) for i, col in enumerate(columns)]
+        keyed         = _keyed_records(columns, raw_records)
+
+        logger.info(
+            "Fetched %d record(s) of %d total for object='%s', backupsetId=%s",
+            records_count, total, object_name, backupset_id,
+        )
+
+        return {
+            "organization_name": org_name,
+            "salesforce_org_id": resolve_result.get("salesforce_org_id", salesforce_org_id),
+            "client_id": client_id,
+            "backupset_id": backupset_id,
+            "object_name": object_name,
+            "limit": limit,
+            "offset": offset,
+            "total_record_count": total,
+            "records_returned": records_count,
+            "columns": col_names,
+            "records": keyed,
+        }
+
+    except Exception as e:
+        logger.error(
+            "Error fetching Salesforce records for object='%s', backupsetId=%s: %s",
+            object_name, backupset_id, e,
+        )
+        raise ToolError({"error": str(e)})
+
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
+
+SALESFORCE_TOOLS = [
+    get_salesforce_client_and_backupset_ids,
+    get_salesforce_records,
+]
