@@ -21,6 +21,7 @@ The Commvault MCP Server enables seamless integration with Commvault environment
 | **Plan Management** | • View plan configurations and details<br>• Access plan components and settings |
 | **Schedule Management** | • Access backup schedules<br>• View schedule configurations<br>• Monitor schedule performance |
 | **DocuSign Integration** | • Setup Docusign Vault & Workflow<br>• Backup envelopes to Commvault S3 vault<br>• List & restore DocuSign envelope backups |
+| **Salesforce Integration** | • Resolve Salesforce org ID to Commvault client<br>• Browse backed-up Salesforce object records from latest snapshot<br>• Filter records with optional WHERE-clause queries<br>• Paginated access to large record sets |
 
 
 
@@ -234,6 +235,44 @@ When deployed behind a reverse proxy or load balancer, configure `TRUSTED_PROXY_
 ```bash
 export TRUSTED_PROXY_IPS="10.0.0.1,10.0.0.2,192.168.1.100"
 ```
+</details>
+
+<details>
+<summary>Salesforce Backup Integration</summary>
+<br/>
+
+The Salesforce integration enables browsing of backed-up Salesforce records stored in Commvault. It provides two tools:
+
+| Tool | Description |
+|------|-------------|
+| `get_salesforce_client` | Resolves a Salesforce Organisation ID (15- or 18-character) to the corresponding Commvault `clientId` |
+| `get_salesforce_records` | Fetches backed-up records for a Salesforce object (e.g. `Account`, `Contact`, `Opportunity`) from the latest backup snapshot |
+
+### Prerequisites
+
+1. **Environment Variable**: Set `ENABLE_SALESFORCE_TOOLS=true` in your environment
+2. **Commvault Salesforce Backup**: At least one Salesforce organisation must be configured and backed up in Commvault
+
+### Usage Example
+
+To browse backed-up `Account` records for a Salesforce org:
+
+```
+Get all backed-up Account records for Salesforce org 00D2w000005mBCpEAM
+```
+
+The tool will automatically resolve the org ID to a Commvault client and return the latest backed-up records.
+
+### Parameters for `get_salesforce_records`
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `salesforce_org_id` | Yes | Salesforce Organisation ID (15 or 18 characters) |
+| `object_name` | Yes | Salesforce API object name (e.g. `Account`, `Contact`) |
+| `limit` | No | Max records to return (default `50`, max `1000`) |
+| `offset` | No | Pagination offset (default `0`) |
+| `free_query` | No | Optional WHERE-clause filter (e.g. `"Name = 'Acme'"`) |
+
 </details>
 
 <details>

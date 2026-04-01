@@ -19,7 +19,7 @@ Salesforce tools for the Commvault MCP Server.
 
 Provides tools to:
   - Resolve a Salesforce organisation ID to the corresponding Commvault
-    clientId and backupsetId using the Salesforce list (Organization) API.
+    clientId using the Salesforce list (Organization) API.
   - Fetch backed-up Salesforce records for a given object using the
     Commvault Salesforce records API (Reportsplus Engine dataset endpoint).
     Records are always returned from the latest backup snapshot.
@@ -110,9 +110,9 @@ def _keyed_records(columns: list[dict], raw_records: list) -> list[dict]:
     return [dict(zip(col_names, row)) for row in raw_records]
 
 
-# ── Tool 1: Resolve Salesforce org ID → clientId + backupsetId ───────────────
+# ── Tool 1: Resolve Salesforce org ID → clientId ────────────────────────────
 
-def get_salesforce_client_and_backupset_ids(
+def get_salesforce_client(
     salesforce_org_id: Annotated[
         str,
         Field(
@@ -125,8 +125,8 @@ def get_salesforce_client_and_backupset_ids(
     ],
 ) -> dict:
     """
-    Resolve a Salesforce organisation ID to the Commvault clientId and
-    backupsetId by querying the Salesforce Organisation list API.
+    Resolve a Salesforce organisation ID to the Commvault clientId
+    by querying the Salesforce Organisation list API.
 
     Uses the /Salesforce/Organization endpoint to retrieve all configured
     organisations and then matches on sfOrgId, supporting both the 15-char
@@ -138,8 +138,6 @@ def get_salesforce_client_and_backupset_ids(
     Returns:
         A dict containing:
           - client_id           (int)  Commvault client ID for the org.
-          - backupset_id        (int)  Commvault backupset ID for the org.
-          - backupset_name      (str)  Human-readable backupset name.
           - organization_name   (str)  Commvault client / org name.
           - salesforce_org_id   (str)  Canonical SF org ID as stored in Commvault.
           - endpoint            (str)  Salesforce login endpoint URL.
@@ -199,7 +197,7 @@ def get_salesforce_records(
         Field(
             description=(
                 "The Salesforce Organisation ID used to automatically resolve "
-                "the Commvault clientId and backupsetId before fetching records "
+                "the Commvault clientId before fetching records "
                 "(e.g. '00D2w000005mBCpEAM')."
             )
         ),
@@ -247,7 +245,7 @@ def get_salesforce_records(
 
     This tool performs two steps automatically:
       1. Calls the Salesforce Organisation list API to resolve the supplied
-         salesforce_org_id into a Commvault backupsetId.
+         salesforce_org_id into a Commvault clientId.
       2. Queries the Commvault Reportsplus Engine dataset endpoint
          (/cr/reportsplusengine/datasets/{dataset_id}/data) with
          pitOptions='latest' and queryOptions='latest' to ensure the most
@@ -285,7 +283,7 @@ def get_salesforce_records(
             salesforce_org_id, object_name,
         )
 
-        resolve_result = get_salesforce_client_and_backupset_ids(salesforce_org_id)
+        resolve_result = get_salesforce_client(salesforce_org_id)
 
         client_id: int    = resolve_result["client_id"]
         backupset_id: int = resolve_result["backupset_id"]
@@ -372,6 +370,6 @@ def get_salesforce_records(
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 SALESFORCE_TOOLS = [
-    get_salesforce_client_and_backupset_ids,
+    get_salesforce_client,
     get_salesforce_records,
 ]
