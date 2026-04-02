@@ -25,12 +25,50 @@ Provides tools to:
     Records are always returned from the latest backup snapshot.
 """
 
+import json
+
 from fastmcp.exceptions import ToolError
-from typing import Annotated
-from pydantic import Field
+from typing import Annotated, Optional
+from pydantic import BaseModel, Field
 
 from src.cv_api_client import commvault_api_client
 from src.logger import logger
+
+
+# ── Filter models ────────────────────────────────────────────────────────────
+
+class QueryBuilderRule(BaseModel):
+    """
+    A single filter condition on a Salesforce field.
+
+    ColumnType values:  STRING=0, INTEGER=1, DOUBLE=2, DATE=3,
+                        BOOLEAN=4, ENUM=5, DATETIME=6, TIME=7
+    Condition (QueryOperationType) values:
+        EQUALS=0, DOESNOTEQUALS=1, CONTAINS=2, DOESNOTCONTAINS=3,
+        LESSTHAN=4, LESSTHANEQUAL=5, GREATERTHAN=6, GREATERTHANEQUAL=7,
+        BETWEEN=8, ANYINSELECTION=9, NOTINSELECTION=10, REGEX=11,
+        STARTSWITH=12, ENDSWITH=13, ISNULL=14, ISNOTNULL=15,
+        ISEMPTY=16, ISNOTEMPTY=17, NOTBETWEEN=18
+    """
+    column: str = Field(description="Salesforce API field name (e.g. 'Name', 'AccountNumber', 'CreatedDate').")
+    condition: int = Field(description="QueryOperationType integer: EQUALS=0, DOESNOTEQUALS=1, CONTAINS=2, DOESNOTCONTAINS=3, LESSTHAN=4, LESSTHANEQUAL=5, GREATERTHAN=6, GREATERTHANEQUAL=7, BETWEEN=8, REGEX=11, STARTSWITH=12, ENDSWITH=13, ISNULL=14, ISNOTNULL=15, ISEMPTY=16, ISNOTEMPTY=17, NOTBETWEEN=18")
+    columnType: int = Field(description="ColumnType integer: STRING=0, INTEGER=1, DOUBLE=2, DATE=3, BOOLEAN=4, ENUM=5, DATETIME=6, TIME=7")
+    stringParam1: str = Field(default="", description="Primary filter value (or start of range for BETWEEN/NOTBETWEEN).")
+    stringParam2: Optional[str] = Field(default=None, description="End of range value for BETWEEN or NOTBETWEEN conditions only.")
+
+
+class QueryBuilderBlock(BaseModel):
+    """
+    A group of filter rules or nested sub-blocks combined with AND or OR.
+    Either 'rules' (leaf conditions) or 'blocks' (nested groups) should be populated — not both.
+    """
+    rules: Optional[list[QueryBuilderRule]] = Field(default=None, description="Leaf filter conditions in this block.")
+    isAnd: bool = Field(default=True, description="True = combine rules/blocks with AND; False = combine with OR.")
+    isNot: Optional[bool] = Field(default=None, description="True = negate the entire block result.")
+    blocks: Optional[list['QueryBuilderBlock']] = Field(default=None, description="Nested sub-blocks for complex compound filters.")
+
+
+QueryBuilderBlock.model_rebuild()
 
 
 # ── Dataset ID for the Salesforce record browse endpoint ─────────────────────
@@ -229,12 +267,22 @@ def get_salesforce_records(
             ge=0,
         ),
     ] = 0,
-    free_query: Annotated[
+    filter_query: Annotated[
         str,
         Field(
             description=(
-                "Optional WHERE-clause filter to narrow results "
-                "(e.g. \"Name = 'Acme'\"). Leave empty to return all records."
+                "Optional JSON filter string (freeQueryProp format) to narrow results. "
+                "Build a QueryBuilderBlock JSON from the user's natural language filter. "
+                "Example — name contains 'test' AND CreatedDate between two timestamps: "
+                '{"isAnd":true,"rules":['
+                '{"column":"Name","condition":2,"columnType":0,"stringParam1":"test"},'
+                '{"column":"CreatedDate","condition":8,"columnType":6,"stringParam1":"1743465600000","stringParam2":"1775087999000"}]}. '
+                "condition values: EQUALS=0, DOESNOTEQUALS=1, CONTAINS=2, DOESNOTCONTAINS=3, "
+                "LESSTHAN=4, LESSTHANEQUAL=5, GREATERTHAN=6, GREATERTHANEQUAL=7, BETWEEN=8, "
+                "REGEX=11, STARTSWITH=12, ENDSWITH=13, ISNULL=14, ISNOTNULL=15, "
+                "ISEMPTY=16, ISNOTEMPTY=17, NOTBETWEEN=18. "
+                "columnType values: STRING=0, INTEGER=1, DOUBLE=2, DATE=3, BOOLEAN=4, ENUM=5, DATETIME=6, TIME=7. "
+                "Leave empty string to return all records."
             )
         ),
     ] = "",
@@ -259,7 +307,7 @@ def get_salesforce_records(
         object_name:       Salesforce API object name (e.g. 'Account').
         limit:             Max records to return (default 50, max 1000).
         offset:            Pagination offset (default 0).
-        free_query:        Optional WHERE-clause filter string.
+        filter_query:      Optional structured QueryBuilderBlock filter.
 
     Returns:
         A dict containing:
@@ -314,8 +362,8 @@ def get_salesforce_records(
             "parameter.queryOptions": "latest",
         }
 
-        if free_query:
-            params["parameter.freeQuery"] = free_query
+        if filter_query:
+            params["freeQueryProp"] = filter_query
 
         endpoint = f"cr/reportsplusengine/datasets/{_SF_RECORDS_DATASET_ID}/data"
 
