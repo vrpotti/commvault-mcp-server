@@ -39,7 +39,8 @@ class CommvaultApiClient:
     def _get_headers(self, additional_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         auth_token, _ = self.auth_service.get_tokens()
         headers = {
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'User-Agent': 'commvault-mcp-server/0.1.0'
         }
         if self.use_oauth:
             headers['Authorization'] = auth_token # this will have Bearer prefix
@@ -75,7 +76,8 @@ class CommvaultApiClient:
             
             headers = {
                 'Accept': 'application/json',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'commvault-mcp-server/0.1.0'
             }
             
             response = requests.post(
