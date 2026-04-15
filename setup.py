@@ -119,14 +119,15 @@ def validate_commvault_tokens(access_token, refresh_token, server_url):
         
         headers = {
             'Accept': 'application/json',
-            'Authtoken': access_token
+            'Authtoken': access_token,
+            'User-Agent': 'commvault-mcp-server/0.1.0'
         }
         
         console.print("[dim]Validating Commvault tokens...[/dim]")
         response = requests.get(
-            test_endpoint, 
-            headers=headers, 
-            timeout=10, 
+            test_endpoint,
+            headers=headers,
+            timeout=10,
             verify=get_env_var("SSL_VERIFY", default="true").lower() == "true")
         
         if response.status_code == 200:
@@ -305,7 +306,7 @@ def prompt_and_save_keyring(service_name, env_vars):
         while True:
             current_access = keyring.get_password(service_name, 'access_token')
             display_val = "<hidden>" if current_access else "none"
-            access_token = getpass(f"Enter access_token [{display_val}]: ")
+            access_token = getpass(f"Enter access_token [{display_val}]: ").strip()
             
             if not access_token:
                 # User wants to keep existing token
@@ -320,7 +321,7 @@ def prompt_and_save_keyring(service_name, env_vars):
             # Handle refresh_token
             current_refresh = keyring.get_password(service_name, 'refresh_token')
             display_val = "<hidden>" if current_refresh else "none"
-            refresh_token = getpass(f"Enter refresh_token [{display_val}]: ")
+            refresh_token = getpass(f"Enter refresh_token [{display_val}]: ").strip()
             
             if not refresh_token:
                 # User wants to keep existing refresh token
