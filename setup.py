@@ -103,7 +103,7 @@ def is_keyring_secure():
     except Exception as e:
         return False, 'Unknown', f'Error checking backend: {str(e)}'
 
-def validate_commvault_tokens(access_token, refresh_token, server_url):
+def validate_commvault_tokens(access_token, refresh_token, server_url, is_metallic=False):
     """
     Validate Commvault access and refresh tokens by making a test API call.
     """
@@ -114,26 +114,40 @@ def validate_commvault_tokens(access_token, refresh_token, server_url):
         return False, "Commvault server URL is required for token validation."
     
     try:
-        api_base_url = urljoin(server_url.rstrip('/') + '/', 'commandcenter/api/')
+        if is_metallic:
+            api_base_url = server_url.rstrip('/') + '/'
+        else:
+            api_base_url = urljoin(server_url.rstrip('/') + '/', 'commandcenter/api/')
         test_endpoint = urljoin(api_base_url, 'v2/whoami')
         
-        headers = {
-            'Accept': 'application/json',
-            'Authtoken': access_token,
-            'User-Agent': 'commvault-mcp-server/0.1.0'
-        }
+        ssl_verify = get_env_var("SSL_VERIFY", default="true").lower() == "true"
         
         console.print("[dim]Validating Commvault tokens...[/dim]")
-        response = requests.get(
-            test_endpoint,
-            headers=headers,
-            timeout=10,
-            verify=get_env_var("SSL_VERIFY", default="true").lower() == "true")
+        
+        bearer_headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {access_token}',
+            'User-Agent': 'commvault-mcp-server/0.1.0'
+        }
+        response = requests.get(test_endpoint, headers=bearer_headers, timeout=10, verify=ssl_verify)
         
         if response.status_code == 200:
             return True, None
-        elif response.status_code == 401:
-            return False, "Invalid access token. The token may be expired or incorrect. Please generate a new token."
+        
+        if response.status_code == 401:
+            authtoken_headers = {
+                'Accept': 'application/json',
+                'Authtoken': access_token,
+                'User-Agent': 'commvault-mcp-server/0.1.0'
+            }
+            response = requests.get(test_endpoint, headers=authtoken_headers, timeout=10, verify=ssl_verify)
+            
+            if response.status_code == 200:
+                return True, None
+            elif response.status_code == 401:
+                return False, "Invalid access token. The token may be expired or incorrect. Please generate a new token."
+            else:
+                return False, f"Token validation failed with HTTP {response.status_code}. Please check your tokens and server URL."
         else:
             return False, f"Token validation failed with HTTP {response.status_code}. Please check your tokens and server URL."
             
@@ -152,10 +166,24 @@ def prompt_update_env(env_vars):
     console.print("\n[bold underline]Environment Variables[/bold underline]")
     console.print("Press Enter to keep the current value (shown in brackets).\n")
 
+    current_metallic = env_vars.get('IS_METALLIC', 'false').lower()
+    is_metallic = Prompt.ask(
+        "Is this a Metallic setup? (y/n)",
+        default='y' if current_metallic == 'true' else 'n'
+    )
+    if is_metallic.lower() in ['y', 'yes', 'true']:
+        env_vars['IS_METALLIC'] = 'true'
+        env_vars['CC_SERVER_URL'] = 'https://api.metallic.io'
+        console.print(f"[green]Using Metallic gateway: https://api.metallic.io[/green]")
+    else:
+        env_vars['IS_METALLIC'] = 'false'
+
     for key in keys:
         current_val = env_vars.get(key, '')
 
         if key == 'CC_SERVER_URL':
+            if env_vars.get('IS_METALLIC') == 'true':
+                continue
             while True:
                 val = Prompt.ask(key, default=current_val if current_val else '')
                 if not val:
@@ -333,7 +361,8 @@ def prompt_and_save_keyring(service_name, env_vars):
             
             # Validate tokens if server URL is available
             if server_url:
-                is_valid, error_msg = validate_commvault_tokens(access_token, refresh_token, server_url)
+                is_metallic = env_vars.get('IS_METALLIC', 'false').lower() == 'true'
+                is_valid, error_msg = validate_commvault_tokens(access_token, refresh_token, server_url, is_metallic)
                 if is_valid:
                     # Store validated tokens
                     keyring.set_password(service_name, 'access_token', access_token)

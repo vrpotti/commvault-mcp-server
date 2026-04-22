@@ -93,6 +93,7 @@ cd commvault-mcp-server
 ### 2. Run the Setup Script
 
 The setup script will guide you through configuration options including:
+- **Metallic or on-premise deployment** — for Metallic setups, the gateway URL is configured automatically
 - Transport mode (stdio, streamable-http, or sse)
 - Server connection details (for remote modes)
 - Authentication method (traditional tokens or OAuth)
@@ -102,6 +103,18 @@ The setup script will guide you through configuration options including:
 ```bash
 uv run setup.py
 ```
+
+<details>
+<summary>Metallic (Cloud) Setup</summary>
+<br/>
+
+When prompted **"Is this a Metallic setup?"**, select **yes**. The setup script will automatically configure:
+
+- **Gateway URL:** `https://api.metallic.io`
+
+No additional configuration is needed for the server URL; all other setup steps (transport mode, authentication, etc.) proceed as normal.
+
+</details>
 
 ### 3. Start the MCP Server
 
