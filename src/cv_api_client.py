@@ -31,10 +31,16 @@ load_dotenv()
 class CommvaultApiClient:
     
     def __init__(self, use_oauth=False):
-        self.base_url = get_env_var("CC_SERVER_URL") + "/commandcenter/api/"
+        server_url = get_env_var("CC_SERVER_URL")
+        is_metallic = get_env_var("IS_METALLIC", default="false").lower() == "true"
+        if is_metallic:
+            self.base_url = server_url.rstrip('/') + '/'
+        else:
+            self.base_url = server_url + "/commandcenter/api/"
         self.ssl_verify = get_env_var("SSL_VERIFY", default="true").lower() == "true"  # This is to disable SSL verification for development purposes
         self.use_oauth = use_oauth
         self.auth_service = OAuthService() if use_oauth else AuthService()
+        self._use_bearer_auth = not use_oauth
 
     def _get_headers(self, additional_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         auth_token, _ = self.auth_service.get_tokens()
@@ -44,6 +50,8 @@ class CommvaultApiClient:
         }
         if self.use_oauth:
             headers['Authorization'] = auth_token # this will have Bearer prefix
+        elif self._use_bearer_auth:
+            headers['Authorization'] = f'Bearer {auth_token}'
         else:
             headers['Authtoken'] = auth_token
 
@@ -143,11 +151,16 @@ class CommvaultApiClient:
                 
                 # Handle 401 Unauthorized error (expired token)
                 if response.status_code == 401 and not self.use_oauth:
+                    if self._use_bearer_auth:
+                        logger.info("Bearer auth returned 401. Falling back to Authtoken header...")
+                        self._use_bearer_auth = False
+                        request_headers = self._get_headers(headers)
+                        continue
+
                     logger.info("Received 401 Unauthorized response. Attempting to refresh token...")
                     success = self._refresh_access_token()
                     
                     if success:
-                        # Update headers with new token and retry the request
                         request_headers = self._get_headers(headers)
                         logger.info(f"Retrying {method} request with new token")
                         continue
