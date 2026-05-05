@@ -328,6 +328,10 @@ Place your DocuSign private key file in the `config/` directory as `docusign_key
 
 </details>
 
+## Note on LiteLLM
+
+We do not recommend using [LiteLLM](https://github.com/BerriAI/litellm) as an MCP client. LiteLLM's per-turn session lifecycle triggers cosmetic `ClosedResourceError` tracebacks in the server terminal due to a race condition in the upstream `mcp` Python SDK — these are harmless but noisy.
+
 ## Contributing
 
 - We're continuing to add more functionality to this MCP server. If you'd like to leave feedback, file a bug or provide a feature request, please open an issue on this repository.

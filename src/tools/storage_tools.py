@@ -68,7 +68,7 @@ def get_library_list() -> dict:
     Gets the list of libraries.
     """
     try:
-        return commvault_api_client.get("V2/Library?propertyLevel=10")
+        return commvault_api_client.get("Library?propertyLevel=10")
     except Exception as e:
         logger.error(f"Error retrieving library list: {e}")
         return ToolError({"error": str(e)})
@@ -78,7 +78,7 @@ def get_library_properties(library_id: Annotated[str, Field(description="The lib
     Gets properties for a given library id.
     """
     try:
-        return commvault_api_client.get(f"V2/Library/{library_id}")
+        return commvault_api_client.get(f"Library/{library_id}")
     except Exception as e:
         logger.error(f"Error retrieving library properties: {e}")
         return ToolError({"error": str(e)})
