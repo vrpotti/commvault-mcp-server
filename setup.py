@@ -136,15 +136,6 @@ def getpass_masked(prompt: str = "Password: ") -> str:
     return "".join(chars)
 
 
-def mask_token(token: str, visible_chars: int = 4) -> str:
-    """Return a masked version of a token, showing only the first and last few characters."""
-    if not token:
-        return "none"
-    if len(token) <= visible_chars * 2:
-        return "*" * len(token)
-    return token[:visible_chars] + "*" * (len(token) - visible_chars * 2) + token[-visible_chars:]
-
-
 def validate_https_url(url):
     if not url:
         return False, "URL cannot be empty."
@@ -424,7 +415,7 @@ def prompt_and_save_keyring(service_name, env_vars):
         # Handle access_token
         while True:
             current_access = keyring.get_password(service_name, 'access_token')
-            display_val = mask_token(current_access)
+            display_val = "<hidden>" if current_access else "none"
             access_token = getpass_masked(f"Enter access_token [{display_val}]: ").strip()
             
             if not access_token:
@@ -439,7 +430,7 @@ def prompt_and_save_keyring(service_name, env_vars):
             
             # Handle refresh_token
             current_refresh = keyring.get_password(service_name, 'refresh_token')
-            display_val = mask_token(current_refresh)
+            display_val = "<hidden>" if current_refresh else "none"
             refresh_token = getpass_masked(f"Enter refresh_token [{display_val}]: ").strip()
             
             if not refresh_token:
